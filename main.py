@@ -20,26 +20,8 @@ yt_dlp.utils.bug_reports_message = lambda: ''
 intents = nextcord.Intents().default()
 intents.members = True
 bot = commands.Bot(command_prefix=config.PREFIX, intents=intents)
-connected_to_vc = False
-
-ytdl_format_options = {'format': 'bestaudio',
-                       'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-                       'restrictfilenames': True,
-                       'no-playlist': True,
-                       'nocheckcertificate': True,
-                       'ignoreerrors': False,
-                       'logtostderr': False,
-                       'geo-bypass': True,
-                       'quiet': True,
-                       'no_warnings': True,
-                       'default_search': 'auto',
-                       'source_address': '0.0.0.0'}
-ffmpeg_options = {'options': '-vn'}
-ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
-play_queue = []
-player_obj_queue = []
+ytdl = yt_dlp.YoutubeDL(config.ytdl_format_options)
 servers = []
-current_server = None
 
 
 @bot.event
@@ -234,6 +216,17 @@ async def fox(ctx):
     await ctx.send(embed=em)
 
 
+class RuntimeVars:
+    def __init__(self):
+        self.connected_to_vc = False
+        self.current_server = None
+        self.voice_client = None
+        self.play_queue = []
+        self.player_obj_queue = []
+
+
+rv = RuntimeVars()
+
 for file in os.listdir():
     if file.endswith('.webm'):
         os.remove(file)
@@ -266,7 +259,7 @@ class YTDLSource(nextcord.PCMVolumeTransformer):
         if 'entries' in data:
             data = data['entries'][0]
         filename = data['url'] if stream else ytdl.prepare_filename(data)
-        return cls(nextcord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+        return cls(nextcord.FFmpegPCMAudio(filename, **config.ffmpeg_options), data=data)
 
 
 @bot.command()
@@ -277,94 +270,91 @@ async def debug(ctx, *, code):
 
 
 async def connect_to_voice_channel(ctx, channel):
-    global voice_client, connected_to_vc
-    voice_client = await channel.connect()
-    if voice_client.is_connected():
-        connected_to_vc = True
-        await ctx.send(f'Connected to {voice_client.channel.name}')
+    rv.voice_client = await channel.connect()
+    if rv.voice_client.is_connected():
+        rv.connected_to_vc = True
+        await ctx.send(f'Connected to {rv.voice_client.channel.name}')
     else:
-        connected_to_vc = False
+        rv.connected_to_vc = False
         await ctx.send(f'Failed to connect to voice channel {ctx.author.voice.channel.name}')
 
 
 @bot.command()
 async def disconnect(ctx):
     """Отключает бота от голосового канала"""
-    global connected_to_vc, play_queue, player_obj_queue, current_server
-    if connected_to_vc:
-        await voice_client.disconnect()
-        await ctx.send(f'Disconnected from {voice_client.channel.name}')
-        connected_to_vc = False
-        play_queue = []
-        player_obj_queue = []
-        current_server = None
+    if rv.connected_to_vc:
+        await rv.voice_client.disconnect()
+        await ctx.send(f'Disconnected from {rv.voice_client.channel.name}')
+        rv.connected_to_vc = True
+        config.PLAY_QUEUE = []
+        config.PLAYER_OBJ_QUEUE = []
+        rv.current_server = None
 
 
 @bot.command()
 async def pause(ctx):
     """Останавливает текущую песню"""
-    if connected_to_vc and voice_client.is_playing():
-        voice_client.pause()
+    if rv.connected_to_vc and rv.voice_client.is_playing():
+        rv.voice_client.pause()
         await ctx.send('Paused')
 
 
 @bot.command()
 async def resume(ctx):
     """Возобновляет текущую песню"""
-    if connected_to_vc and voice_client.is_paused():
-        voice_client.resume()
+    if rv.connected_to_vc and rv.voice_client.is_paused():
+        rv.voice_client.resume()
         await ctx.send('Resumed')
 
 
 @bot.command()
 async def skip(ctx):
     """Пропускает текущую песню"""
-    if connected_to_vc and voice_client.is_playing():
-        voice_client.stop()
+    if rv.connected_to_vc and rv.voice_client.is_playing():
+        rv.voice_client.stop()
         await play_next(ctx)
 
 
 @bot.command()
 async def queue(ctx):
     """Показывает текущую очередь"""
-    if connected_to_vc:
-        await ctx.send(f'{play_queue}')
+    if rv.connected_to_vc:
+        await ctx.send(f'{rv.play_queue}')
 
 
 @bot.command()
 async def remove(ctx, id: int):
     """Убирает песню из очереди по индексу (1...)"""
-    if connected_to_vc:
+    if rv.connected_to_vc:
         if id == 0:
             await ctx.send('Cannot remove current playing song')
         else:
-            await ctx.send(f'Removed {play_queue[id]}')
-            play_queue.pop(id)
-            player_obj_queue.pop(id)
+            await ctx.send(f'Removed {rv.play_queue[id]}')
+            rv.play_queue.pop(id)
+            rv.player_obj_queue.pop(id)
 
 
 @bot.command()
 async def clear(ctx):
     """Очищает очередь и останавливает текущую песню"""
-    global play_queue, player_obj_queue
-    if connected_to_vc and voice_client.is_playing():
-        voice_client.stop()
-        play_queue = []
-        player_obj_queue = []
+    if rv.connected_to_vc and rv.voice_client.is_playing():
+        rv.voice_client.stop()
+        config.PLAY_QUEUE = []
+        config.PLAYER_OBJ_QUEUE = []
         await ctx.send('Queue cleared.')
 
 
 @bot.command()
 async def song(ctx):
     """Показывает текущую песню"""
-    if connected_to_vc:
-        await ctx.send(f'Currently playing {play_queue[0]}')
+    if rv.connected_to_vc:
+        await ctx.send(f'Currently playing {rv.play_queue[0]}')
 
 
 async def play_next(ctx):
     print('\nPlaying next...')
-    if play_queue:
-        await play_song(ctx, player_obj_queue[0])
+    if rv.play_queue:
+        await play_song(ctx, rv.player_obj_queue[0])
     else:
         await ctx.send('Reached end of queue')
 
@@ -375,11 +365,11 @@ def callback(e):
     else:
         # finished playing prev song without error so removing entry from queue here
         print('\nPlaying next...')
-        if play_queue:
-            play_queue.pop(0)
-        if player_obj_queue:
-            player_obj_queue.pop(0)
-            voice_client.play(player_obj_queue[0], after=callback)
+        if rv.play_queue:
+            rv.play_queue.pop(0)
+        if rv.player_obj_queue:
+            rv.player_obj_queue.pop(0)
+            rv.voice_client.play(rv.player_obj_queue[0], after=callback)
         else:
             print('Reached end of queue')
 
@@ -392,31 +382,30 @@ async def play_song(ctx, link):
             print('Error encountered. Attempting to clear cache and retry...')
             subprocess.call('yt-dlp --rm-cache-dir', shell=True)
             player = await YTDLSource.from_url(link, loop=bot.loop, stream=False)
-        player_obj_queue.append(player)
-        if not voice_client.is_playing():
-            voice_client.play(player_obj_queue[0], after=callback)
-            await ctx.send(f'Now playing: {player_obj_queue[0].title}')
+        rv.player_obj_queue.append(player)
+        if not rv.voice_client.is_playing():
+            rv.voice_client.play(rv.player_obj_queue[0], after=callback)
+            await ctx.send(f'Now playing: {rv.player_obj_queue[0].title}')
 
 
 @bot.command()
 async def play(ctx, *, song: str):
     """Воспроизведение видео YouTube по URL, если задан URL,
     или ищет песню и воспроизводит первое видео в результате поиска."""
-    global connected_to_vc, current_server
-    if current_server and current_server != ctx.guild:
+    if rv.current_server and rv.current_server != ctx.guild:
         await ctx.send('The bot is currently being used in another server.')
         return
-    elif current_server is None:
-        current_server = ctx.guild
-    if not connected_to_vc:
+    elif rv.current_server is None:
+        rv.current_server = ctx.guild
+    if not rv.connected_to_vc:
         if ctx.author.voice is None:
-            connected_to_vc = False
+            rv.connected_to_vc = False
             await ctx.send(f'You are not connected to any voice channel!')
         else:
             await connect_to_voice_channel(ctx, ctx.author.voice.channel)
-    elif voice_client.channel != ctx.author.voice.channel:
-        await voice_client.move_to(ctx.author.voice.channel)
-    if connected_to_vc:
+    elif rv.voice_client.channel != ctx.author.voice.channel:
+        await rv.voice_client.move_to(ctx.author.voice.channel)
+    if rv.connected_to_vc:
         try:
             requests.get(song)
         except (requests.ConnectionError, requests.exceptions.MissingSchema):
@@ -431,8 +420,8 @@ async def play(ctx, *, song: str):
             format_url = urllib.request.urlopen("https://www.youtube.com/results?" + query_string)
             search_results = re.findall(r"watch\?v=(\S{11})", format_url.read().decode())
             link = f'https://www.youtube.com/watch?v={search_results[0]}'
-        play_queue.append(link)
-        if voice_client.is_playing():
+        rv.play_queue.append(link)
+        if rv.voice_client.is_playing():
             await ctx.send(f'Added to queue: {song}')
         await play_song(ctx, link)
 
